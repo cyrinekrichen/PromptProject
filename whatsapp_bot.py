@@ -202,6 +202,7 @@ def valid_signature(body: bytes, header: str) -> bool:
 @app.post("/webhook")
 async def receive(request: Request, background: BackgroundTasks):
     body = await request.body()
+    log.info("Webhook POST received (%d bytes)", len(body))
     if not valid_signature(body, request.headers.get("X-Hub-Signature-256", "")):
         log.warning("Rejected webhook with invalid signature.")
         return Response(status_code=403)
