@@ -1,2 +1,6 @@
-ollama
+﻿ollama
 textual
+fastapi
+uvicorn
+httpx
+python-dotenv

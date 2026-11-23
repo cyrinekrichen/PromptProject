@@ -23,6 +23,11 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_name   TEXT,                   -- only for tool results
     created_at  TEXT NOT NULL
 );
+-- Which WhatsApp number owns a session (sessions from the terminal app have no row).
+CREATE TABLE IF NOT EXISTS whatsapp_sessions (
+    session_id  INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    phone       TEXT NOT NULL
+);
 """
 
 
@@ -101,4 +106,43 @@ def delete_session(session_id):
         # SQLite doesn't enforce ON DELETE CASCADE unless foreign keys are enabled,
         # so remove the messages explicitly.
         conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM whatsapp_sessions WHERE session_id = ?", (session_id,))
         conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+
+
+def get_session(session_id):
+    """One session as a dict, or None if it doesn't exist."""
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        return dict(row) if row else None
+
+
+# ---------- WhatsApp ownership ----------
+
+def link_whatsapp_session(session_id, phone):
+    """Mark a session as belonging to a WhatsApp number."""
+    with _connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO whatsapp_sessions (session_id, phone) VALUES (?, ?)",
+            (session_id, phone),
+        )
+
+
+def list_whatsapp_sessions(phone, limit=10):
+    """Sessions owned by a WhatsApp number, most recently used first."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT s.* FROM sessions s JOIN whatsapp_sessions w ON w.session_id = s.id"
+            " WHERE w.phone = ? ORDER BY s.updated_at DESC, s.id DESC LIMIT ?",
+            (phone, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def whatsapp_session_owner(session_id):
+    """Phone number that owns a session, or None."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT phone FROM whatsapp_sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        return row["phone"] if row else None

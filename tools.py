@@ -31,12 +31,16 @@ def set_confirm_callback(fn):
     confirm = fn
 
 
-def run_command(command: str) -> str:
-    """Run a PowerShell command and return its output."""
+def run_command(command: str, confirm_fn=None) -> str:
+    """Run a PowerShell command and return its output.
+
+    confirm_fn: optional per-call confirmation function (used by the WhatsApp bot,
+    where each conversation has its own). Defaults to the global `confirm`.
+    """
     if BLOCKED.search(command):
         return "Error: this command is blocked for safety."
     if RISKY.search(command):
-        if not confirm(command):
+        if not (confirm_fn or confirm)(command):
             return "Command cancelled by the user."
     try:
         result = subprocess.run(

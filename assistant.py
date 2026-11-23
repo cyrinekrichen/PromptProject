@@ -97,12 +97,17 @@ POWERSHELL EXAMPLES:
 
 Greetings get a one-line reply that mentions what you can do."""
 
-def run_tool(call):
+def run_tool(call, confirm=None):
     name = call.function.name
-    args = call.function.arguments
+    args = dict(call.function.arguments)
+    args.pop("confirm_fn", None)  # never let the model choose the confirmation function
     fn = AVAILABLE.get(name)
     if fn is None:
         return f"Error: unknown tool '{name}'."
+    if confirm is not None:
+        # Per-conversation confirmation (WhatsApp). The terminal app leaves it None
+        # and uses the global callback in tools.py.
+        args["confirm_fn"] = confirm
     try:
         return fn(**args)
     except TypeError as e:
@@ -115,8 +120,11 @@ def print_event(kind, data):
         print(f"  [tool] {data['name']}({data['arguments']})")
 
 
-def chat_turn(messages, on_event=print_event):
+def chat_turn(messages, on_event=print_event, confirm=None):
     """Run one user request: call the model, run its tool calls, repeat.
+
+    confirm(command) -> bool is an optional confirmation function for risky
+    commands; if None, the global one from tools.py is used.
 
     on_event(kind, data) is called as things happen so a UI can display and
     save them. kind is one of:
@@ -148,7 +156,7 @@ def chat_turn(messages, on_event=print_event):
         for call in msg.tool_calls:
             on_event("tool_call", {"name": call.function.name,
                                    "arguments": dict(call.function.arguments)})
-            result = run_tool(call)
+            result = run_tool(call, confirm)
             messages.append(
                 {"role": "tool", "tool_name": call.function.name, "content": result}
             )
