@@ -2,3 +2,5 @@
 __pycache__/
 sessions.db
 *.pyc
+draft.txt
+.env
