@@ -49,7 +49,8 @@ HELP_TEXT = (
     "• new: start a new session\n"
     "• sessions: pick a recent session to resume\n"
     "• current: show the active session\n"
-    "• help: show this message\n\n"
+    "• help: show this message\n"
+    "• /search <question>: search the web (e.g. /search latest news from SMU university)\n\n"
     "Anything else is sent to the assistant."
 )
 

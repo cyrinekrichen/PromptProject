@@ -1,6 +1,7 @@
 import ollama
 from tools import TOOLS, AVAILABLE
 from guard import check_request
+import search
 
 MODEL = "qwen3.5:4b"
 REFUSAL = "Sorry, I can only help with file management and device commands."
@@ -105,14 +106,14 @@ POWERSHELL EXAMPLES:
 - today's date: Get-Date -Format "dddd dd MMMM yyyy"
 - free disk space: Get-PSDrive C | Select-Object Used, Free"""
 
-def run_tool(call, confirm=None):
+def run_tool(call, confirm=None, available=AVAILABLE):
     name = call.function.name
     args = dict(call.function.arguments)
     args.pop("confirm_fn", None)  # never let the model choose the confirmation function
-    fn = AVAILABLE.get(name)
+    fn = available.get(name)
     if fn is None:
         return f"Error: unknown tool '{name}'."
-    if confirm is not None:
+    if confirm is not None and name == "run_command":
         # Per-conversation confirmation (WhatsApp). The terminal app leaves it None
         # and uses the global callback in tools.py.
         args["confirm_fn"] = confirm
@@ -143,10 +144,18 @@ def chat_turn(messages, on_event=print_event, confirm=None):
       "tool_result" data = {"name", "content"}         (after running it)
       "guard"       data = {"allowed_request", "refused_parts", "is_greeting"}
 
+    A message starting with "/search" goes to the web search agent (search.py)
+    instead; nothing else can trigger a web search.
+
     Before the agent runs, the scope guard (guard.py) checks the latest user
     message. Parts outside the assistant's role are removed from the model's
     context and mentioned in a note at the end of the reply.
     """
+    if messages and messages[-1]["role"] == "user":
+        query = search.parse_command(messages[-1]["content"])
+        if query is not None:
+            return search_turn(messages, query, on_event)
+
     note = ""
     if messages and messages[-1]["role"] == "user":
         verdict = check_request(messages[-1]["content"], messages[:-1], MODEL)
@@ -162,13 +171,57 @@ def chat_turn(messages, on_event=print_event, confirm=None):
             note = ("\n\nNote: I can't " + "; ".join(verdict["refused_parts"])
                     + ". I can only help with file management and device commands.")
 
-    for _ in range(5):  # safety cap on tool calls per request
+    return agent_loop(messages, TOOLS, AVAILABLE, on_event, confirm, note)
+
+
+def search_turn(messages, query, on_event):
+    """Handle "/search <query>": a web search agent that bypasses the scope guard.
+
+    It runs on its own short context (search prompt + query) so the file agent's
+    rules don't interfere; its messages are then appended to the main history.
+    """
+    if not query:
+        reply = "Usage: /search <what you want to find>, e.g. /search latest news from SMU university"
+        messages.append({"role": "assistant", "content": reply})
+        on_event("assistant", {"content": reply, "tool_calls": None})
+        return reply
+    work = [{"role": "system", "content": search.search_prompt()},
+            {"role": "user", "content": query}]
+    result = agent_loop(work, search.SEARCH_TOOLS, search.SEARCH_AVAILABLE,
+                        on_event, None, "", max_steps=6, force_answer=True,
+                        num_ctx=16384)
+    # The small model often forgets the source: add the last page it read.
+    pages = [c["function"]["arguments"].get("url") for m in work
+             for c in (m.get("tool_calls") or []) if c["function"]["name"] == "fetch_page"]
+    if pages and pages[-1] and "http" not in result and work[-1]["role"] == "assistant":
+        result += f"\n\nSource: {pages[-1]}"
+        work[-1]["content"] = result
+    messages.extend(work[2:])
+    return result
+
+
+def agent_loop(messages, tools, available, on_event, confirm, note, max_steps=5,
+               force_answer=False, num_ctx=None):
+    """Call the model, run its tool calls, repeat until it gives a final answer.
+
+    force_answer: on the last step, call the model without tools so it must answer
+    with what it has gathered instead of stopping with "too many tool calls".
+    num_ctx: model context size; web pages need more than Ollama's default.
+    """
+    options = {"temperature": 0.2}
+    if num_ctx:
+        options["num_ctx"] = num_ctx
+    for step in range(max_steps):  # safety cap on tool calls per request
+        last = force_answer and step == max_steps - 1
+        if last:
+            messages.append({"role": "user", "content":
+                             "Stop searching now and answer with what you found so far."})
         response = ollama.chat(
             model=MODEL,
             messages=messages,
-            tools=TOOLS,
+            tools=None if last else tools,
             think=False,
-            options={"temperature": 0.2},
+            options=options,
         )
         msg = response.message
         # Store plain dicts so the same shape can be saved to and reloaded from the DB.
@@ -189,7 +242,7 @@ def chat_turn(messages, on_event=print_event, confirm=None):
         for call in msg.tool_calls:
             on_event("tool_call", {"name": call.function.name,
                                    "arguments": dict(call.function.arguments)})
-            result = run_tool(call, confirm)
+            result = run_tool(call, confirm, available)
             messages.append(
                 {"role": "tool", "tool_name": call.function.name, "content": result}
             )

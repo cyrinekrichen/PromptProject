@@ -192,7 +192,8 @@ class AssistantApp(App):
         log.scroll_end(animate=False)
 
     def show_welcome(self):
-        self.add_message("assistant", "New session. I can help with file management and device commands.")
+        self.add_message("assistant", "New session. I can help with file management and device commands. "
+                         "Type /search <question> to search the web.")
 
     def show_history(self, rows):
         """Re-display stored messages when resuming a session."""
