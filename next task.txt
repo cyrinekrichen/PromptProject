@@ -1,0 +1,9 @@
+next task: 
+//search
+example: i want the last update from the smu university, the agent does the scrapping of the smu website
+IF AND ONLY IF i type "/search" 
+if i only type search it shouldnt do it,
+we can use the library "scrapling" on github
+
+change:
+prompt: create a file containing a pizza recipe. it should give the time.

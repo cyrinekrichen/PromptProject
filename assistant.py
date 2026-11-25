@@ -1,7 +1,9 @@
 import ollama
 from tools import TOOLS, AVAILABLE
+from guard import check_request
 
 MODEL = "qwen3.5:4b"
+REFUSAL = "Sorry, I can only help with file management and device commands."
 
 #version1:
 #SYSTEM_PROMPT = """You are a terminal assistant on a Windows computer.
@@ -90,6 +92,7 @@ Never answer from memory: always run a command to check the current state.
 Only report what the command output shows. Never invent names or paths.
 If a command fails, read the error, fix the command, and try once more. If it still fails, tell the user.
 If the user cancels a command, do not retry it.
+When writing into a file, only write text the user gave word for word or text that came from command output. Never write content you made up (recipes, poems, explanations...): create the file empty instead.
 
 POWERSHELL EXAMPLES:
 - list a folder: Get-ChildItem ~/Desktop
@@ -118,7 +121,9 @@ def run_tool(call, confirm=None):
 
 def print_event(kind, data):
     """Default event handler for the plain terminal version."""
-    if kind == "tool_call":
+    if kind == "guard":
+        print(f"  [guard] allowed: {data['allowed_request']!r}  refused: {data['refused_parts']}")
+    elif kind == "tool_call":
         print(f"  [tool] {data['name']}({data['arguments']})")
 
 
@@ -133,7 +138,27 @@ def chat_turn(messages, on_event=print_event, confirm=None):
       "assistant"   data = {"content", "tool_calls"}   (each model reply)
       "tool_call"   data = {"name", "arguments"}       (before running a tool)
       "tool_result" data = {"name", "content"}         (after running it)
+      "guard"       data = {"allowed_request", "refused_parts", "is_greeting"}
+
+    Before the agent runs, the scope guard (guard.py) checks the latest user
+    message. Parts outside the assistant's role are removed from the model's
+    context and mentioned in a note at the end of the reply.
     """
+    note = ""
+    if messages and messages[-1]["role"] == "user":
+        verdict = check_request(messages[-1]["content"], messages[:-1], MODEL)
+        on_event("guard", verdict)
+        if not verdict["allowed_request"]:
+            # Nothing in scope: refuse without running the agent at all.
+            messages.append({"role": "assistant", "content": REFUSAL})
+            on_event("assistant", {"content": REFUSAL, "tool_calls": None})
+            return REFUSAL
+        # The model only sees the in-scope part. The UI and DB already stored the original.
+        messages[-1] = {"role": "user", "content": verdict["allowed_request"]}
+        if verdict["refused_parts"]:
+            note = ("\n\nNote: I can't " + "; ".join(verdict["refused_parts"])
+                    + ". I can only help with file management and device commands.")
+
     for _ in range(5):  # safety cap on tool calls per request
         response = ollama.chat(
             model=MODEL,
@@ -148,13 +173,16 @@ def chat_turn(messages, on_event=print_event, confirm=None):
             {"function": {"name": c.function.name, "arguments": dict(c.function.arguments)}}
             for c in (msg.tool_calls or [])
         ] or None
-        assistant_msg = {"role": "assistant", "content": msg.content or ""}
+        content = msg.content or ""
+        if not tool_calls:
+            content += note  # final answer: add the note about refused parts
+        assistant_msg = {"role": "assistant", "content": content}
         if tool_calls:
             assistant_msg["tool_calls"] = tool_calls
         messages.append(assistant_msg)
-        on_event("assistant", {"content": msg.content or "", "tool_calls": tool_calls})
+        on_event("assistant", {"content": content, "tool_calls": tool_calls})
         if not msg.tool_calls:
-            return msg.content
+            return content
         for call in msg.tool_calls:
             on_event("tool_call", {"name": call.function.name,
                                    "arguments": dict(call.function.arguments)})
